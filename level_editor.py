@@ -1,5 +1,6 @@
 import bpy
 import math
+import bpy_extras
 
 # ブレンダーに登録するアドオン情報
 bl_info = {
@@ -23,10 +24,9 @@ class TOPBAR_MT_my_menu(bpy.types.Menu):
 
     def draw(self, context):
         layout = self.layout
-        # 各オペレータをメニューに追加
         layout.operator(MYADDON_OT_stretch_vertex.bl_idname, text=MYADDON_OT_stretch_vertex.bl_label)
         layout.operator(MYADDON_OT_create_ico_sphere.bl_idname, text=MYADDON_OT_create_ico_sphere.bl_label)
-        layout.separator() # 区切り線
+        layout.separator() 
         layout.operator(MYADDON_OT_export_scene.bl_idname, text=MYADDON_OT_export_scene.bl_label)
 
     def submenu(self, context):
@@ -40,10 +40,8 @@ class MYADDON_OT_stretch_vertex(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        # 資料の通り、名前が "Cube" のオブジェクトを操作
         if "Cube" in bpy.data.objects:
             bpy.data.objects["Cube"].data.vertices[0].co.x += 1.0
-            print("頂点を伸ばしました。")
             return {'FINISHED'}
         else:
             self.report({'WARNING'}, "Cubeが見つかりません")
@@ -58,44 +56,64 @@ class MYADDON_OT_create_ico_sphere(bpy.types.Operator):
 
     def execute(self, context):
         bpy.ops.mesh.primitive_ico_sphere_add()
-        print("ICO球を生成しました。")
         return {'FINISHED'}
 
-# --- オペレータ：シーン出力（資料11〜17ページの内容） ---
-class MYADDON_OT_export_scene(bpy.types.Operator):
+# --- オペレータ：シーン出力（ExportHelper継承版） ---
+class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_idname = "myaddon.myaddon_ot_export_scene"
     bl_label = "シーン出力"
     bl_description = "シーン情報をExportします"
 
+    # 資料より：出力するファイルの拡張子を指定
+    filename_ext = ".scene"
+
+    def write_and_print(self, file, str):
+        """資料より：コンソールとファイルに同時に書き出す関数"""
+        print(str)
+        file.write(str + '\n')
+
+    def parse_scene_recursive(self, file, object, level):
+        """資料より：親子関係を辿る再帰関数（深さ優先探索）"""
+        # 深さに応じてインデント（タブ）を作成
+        indent = ''
+        for i in range(level):
+            indent += "\t"
+
+        # オブジェクト名を出力
+        self.write_and_print(file, indent + object.type + " - " + object.name)
+        
+        # トランスフォーム情報の抽出
+        trans, rot, scale = object.matrix_local.decompose()
+        rot = rot.to_euler()
+        rot.x, rot.y, rot.z = [math.degrees(v) for v in rot]
+
+        # 情報を書き込み
+        self.write_and_print(file, indent + "Trans(%f,%f,%f)" % (trans.x, trans.y, trans.z))
+        self.write_and_print(file, indent + "Rot(%f,%f,%f)" % (rot.x, rot.y, rot.z))
+        self.write_and_print(file, indent + "Scale(%f,%f,%f)" % (scale.x, scale.y, scale.z))
+        self.write_and_print(file, '') # 空行
+
+        # 子オブジェクトに対して再帰呼び出し
+        for child in object.children:
+            self.parse_scene_recursive(file, child, level + 1)
+
+    def export(self):
+        """資料より：ファイル書き出しのメイン処理"""
+        print("シーン情報出力開始... %r" % self.filepath)
+        
+        with open(self.filepath, "wt") as file:
+            self.write_and_print(file, "SCENE")
+            # ルートオブジェクト（親がいないもの）から探索開始
+            for object in bpy.context.scene.objects:
+                if object.parent is None:
+                    self.parse_scene_recursive(file, object, 0)
+
     def execute(self, context):
         print("シーン情報をExportします")
-
-        # シーン内の全オブジェクトを走査（資料13P, 15P）
-        for object in bpy.context.scene.objects:
-            print(object.type + " - " + object.name)
-
-            # ローカルトランスフォーム行列から情報を抽出（資料15P）
-            trans, rot, scale = object.matrix_local.decompose()
-            
-            # 回転を Euler に変換し、度数法に直す
-            rot = rot.to_euler()
-            rot.x = math.degrees(rot.x)
-            rot.y = math.degrees(rot.y)
-            rot.z = math.degrees(rot.z)
-
-            # トランスフォーム情報を表示（資料16P）
-            print("Trans(%f,%f,%f)" % (trans.x, trans.y, trans.z))
-            print("Rot(%f,%f,%f)" % (rot.x, rot.y, rot.z))
-            print("Scale(%f,%f,%f)" % (scale.x, scale.y, scale.z))
-
-            # 親オブジェクトがある場合（資料17P）
-            if object.parent:
-                print("Parent:" + object.parent.name)
-            
-            print() # 次のオブジェクトとの区切り用の空行
-
-        print("シーン情報をExportしました")
+        self.export() # ファイル書き出し実行
+        
         self.report({'INFO'}, "シーン情報をExportしました")
+        print("シーン情報をExportしました")
         return {'FINISHED'}
 
 # --- 登録処理 ---
