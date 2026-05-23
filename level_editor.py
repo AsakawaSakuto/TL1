@@ -1,22 +1,81 @@
 import bpy
 import math
 import bpy_extras
+import gpu
+import gpu_extras.batch
+import copy
+import mathutils
 
 # ブレンダーに登録するアドオン情報
 bl_info = {
     "name": "レベルエディタ",
     "author": "Taro Kamata",
-    "version": (1, 0),
+    "version": (1, 1),
     "blender": (3, 3, 1),
     "location": "",
-    "description": "レベルエディタ",
+    "description": "レベルエディタ（コライダー描画・回転スケール対応版）",
     "warning": "",
     "wiki_url": "",
     "tracker_url": "",
     "category": "Object"
 }
 
-# --- メニュークラス ---
+# --- コライダー描画クラス (スライド3-15の内容を統合・拡張) ---
+class DrawCollider:
+    # 描画ハンドルを保持する静的変数
+    handle = None
+
+    @staticmethod
+    def draw_collider():
+        # 頂点データとインデックスデータの初期化
+        vertices = {"pos": []}
+        indices = []
+        
+        # 立方体の頂点ローカル座標
+        offsets = [
+            [-0.5, -0.5, -0.5], [+0.5, -0.5, -0.5],
+            [-0.5, +0.5, -0.5], [+0.5, +0.5, -0.5],
+            [-0.5, -0.5, +0.5], [+0.5, -0.5, +0.5],
+            [-0.5, +0.5, +0.5], [+0.5, +0.5, +0.5]
+        ]
+        # 当たり判定の基準サイズ (スライド12)
+        size = [2.0, 2.0, 2.0]
+
+        # シーン内の全オブジェクトを走査
+        for obj in bpy.context.scene.objects:
+            # 追加前の頂点数を記録
+            start = len(vertices["pos"])
+            
+            # 各オブジェクトのワールド行列を使用して座標を計算 (回転・スケール対応)
+            for offset in offsets:
+                # 1. ローカル空間でのオフセットを計算
+                local_pos = mathutils.Vector((
+                    offset[0] * size[0], 
+                    offset[1] * size[1], 
+                    offset[2] * size[2]
+                ))
+                # 2. オブジェクトのmatrix_worldを掛けてワールド座標に変換
+                world_pos = obj.matrix_world @ local_pos
+                vertices["pos"].append(world_pos)
+
+            # Boxを構成する12本の辺のインデックスを追加
+            indices.extend([
+                [start+0, start+1], [start+2, start+3], [start+0, start+2], [start+1, start+3],
+                [start+4, start+5], [start+6, start+7], [start+4, start+6], [start+5, start+7],
+                [start+0, start+4], [start+1, start+5], [start+2, start+6], [start+3, start+7]
+            ])
+
+        # シェーダーの準備と描画
+        shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        batch = gpu_extras.batch.batch_for_shader(shader, "LINES", vertices, indices=indices)
+        
+        color = [0.5, 1.0, 1.0, 1.0] # 水色
+        shader.bind()
+        shader.uniform_float("color", color)
+        batch.draw(shader)
+
+
+# --- 既存のメニュークラス ---
 class TOPBAR_MT_my_menu(bpy.types.Menu):
     bl_idname = "TOPBAR_MT_my_menu"
     bl_label = "MyMenu"
@@ -32,7 +91,7 @@ class TOPBAR_MT_my_menu(bpy.types.Menu):
     def submenu(self, context):
         self.layout.menu(TOPBAR_MT_my_menu.bl_idname)
 
-# --- オペレータ：頂点を伸ばす ---
+# --- 既存のオペレータ：頂点を伸ばす ---
 class MYADDON_OT_stretch_vertex(bpy.types.Operator):
     bl_idname = "myaddon.myaddon_ot_stretch_vertex"
     bl_label = "頂点を伸ばす"
@@ -47,9 +106,9 @@ class MYADDON_OT_stretch_vertex(bpy.types.Operator):
             self.report({'WARNING'}, "Cubeが見つかりません")
             return {'CANCELLED'}
 
-# --- オペレータ：ICO球生成 ---
+# --- 既存のオペレータ：ICO球生成 ---
 class MYADDON_OT_create_ico_sphere(bpy.types.Operator):
-    bl_idname = "myaddon.myaddon_ot_create_object" # 元のIDを維持
+    bl_idname = "myaddon.myaddon_ot_create_object"
     bl_label = "ICO球生成"
     bl_description = "ICO球を生成します"
     bl_options = {'REGISTER', 'UNDO'}
@@ -58,7 +117,7 @@ class MYADDON_OT_create_ico_sphere(bpy.types.Operator):
         bpy.ops.mesh.primitive_ico_sphere_add()
         return {'FINISHED'}
 
-# --- オペレータ：シーン出力（ExportHelper継承版） ---
+# --- 既存のオペレータ：シーン出力 ---
 class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_idname = "myaddon.myaddon_ot_export_scene"
     bl_label = "シーン出力"
@@ -103,7 +162,7 @@ class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelp
         self.report({'INFO'}, "シーン情報をExportしました")
         return {'FINISHED'}
 
-# --- ★追加：オペレータ：カスタムプロパティ['file_name']追加 (スライド10) ---
+# --- 既存のオペレータ：カスタムプロパティ追加 ---
 class MYADDON_OT_add_filename(bpy.types.Operator):
     bl_idname = "myaddon.myaddon_ot_add_filename"
     bl_label = "FileName 追加"
@@ -111,13 +170,11 @@ class MYADDON_OT_add_filename(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        # 選択オブジェクトにプロパティを追加
         context.object["file_name"] = ""
         return {'FINISHED'}
 
-# --- ★追加：パネルクラス (スライド9, 11-14) ---
+# --- 既存のパネルクラス ---
 class OBJECT_PT_file_name(bpy.types.Panel):
-    """オブジェクトのファイルネームパネル"""
     bl_idname = "OBJECT_PT_file_name"
     bl_label = "FileName"
     bl_space_type = "PROPERTIES"
@@ -128,22 +185,18 @@ class OBJECT_PT_file_name(bpy.types.Panel):
         layout = self.layout
         obj = context.object
 
-        # スライド9：既存のオペレータを表示
         layout.operator(MYADDON_OT_stretch_vertex.bl_idname, text=MYADDON_OT_stretch_vertex.bl_label)
         layout.operator(MYADDON_OT_create_ico_sphere.bl_idname, text=MYADDON_OT_create_ico_sphere.bl_label)
         layout.operator(MYADDON_OT_export_scene.bl_idname, text=MYADDON_OT_export_scene.bl_label)
 
         layout.separator()
 
-        # スライド12-14：カスタムプロパティの有無による表示切り替え
         if "file_name" in obj:
-            # プロパティがあれば入力欄を表示
             layout.prop(obj, '["file_name"]', text="FileName:")
         else:
-            # プロパティがなければ追加ボタンを表示
             layout.operator(MYADDON_OT_add_filename.bl_idname)
 
-# --- 登録処理 ---
+# --- 登録・解除処理 ---
 classes = (
     MYADDON_OT_stretch_vertex,
     MYADDON_OT_create_ico_sphere,
@@ -154,15 +207,33 @@ classes = (
 )
 
 def register():
+    # クラスの登録
     for cls in classes:
         bpy.utils.register_class(cls)
+    
+    # メニューの追加
     bpy.types.TOPBAR_MT_editor_menus.append(TOPBAR_MT_my_menu.submenu)
+    
+    # 描画ハンドルの登録
+    DrawCollider.handle = bpy.types.SpaceView3D.draw_handler_add(
+        DrawCollider.draw_collider, (), "WINDOW", "POST_VIEW"
+    )
+    
     print("レベルエディタが有効化されました。")
 
 def unregister():
+    # 描画ハンドルの解除
+    if DrawCollider.handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(DrawCollider.handle, "WINDOW")
+        DrawCollider.handle = None
+
+    # メニューの削除
     bpy.types.TOPBAR_MT_editor_menus.remove(TOPBAR_MT_my_menu.submenu)
-    for cls in reversed(classes): # 登録解除は逆順が安全
+    
+    # クラスの登録解除（逆順）
+    for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+        
     print("レベルエディタが無効化されました。")
 
 if __name__ == "__main__":
