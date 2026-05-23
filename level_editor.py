@@ -20,7 +20,7 @@ bl_info = {
     "category": "Object"
 }
 
-# --- コライダー描画クラス (スライド3-15の内容を統合・拡張) ---
+# --- コライダー描画クラス ---
 class DrawCollider:
     # 描画ハンドルを保持する静的変数
     handle = None
@@ -38,38 +38,47 @@ class DrawCollider:
             [-0.5, -0.5, +0.5], [+0.5, -0.5, +0.5],
             [-0.5, +0.5, +0.5], [+0.5, +0.5, +0.5]
         ]
-        # 当たり判定の基準サイズ (スライド12)
-        size = [2.0, 2.0, 2.0]
 
         # シーン内の全オブジェクトを走査
         for obj in bpy.context.scene.objects:
-            # 追加前の頂点数を記録
-            start = len(vertices["pos"])
-            
-            # 各オブジェクトのワールド行列を使用して座標を計算 (回転・スケール対応)
-            for offset in offsets:
-                # 1. ローカル空間でのオフセットを計算
-                local_pos = mathutils.Vector((
-                    offset[0] * size[0], 
-                    offset[1] * size[1], 
-                    offset[2] * size[2]
-                ))
-                # 2. オブジェクトのmatrix_worldを掛けてワールド座標に変換
-                world_pos = obj.matrix_world @ local_pos
-                vertices["pos"].append(world_pos)
+            # "collider" プロパティがあり、値が "BOX" の場合のみ処理する
+            if "collider" in obj and obj["collider"] == "BOX":
+                # 追加前の頂点数を記録
+                start = len(vertices["pos"])
+                
+                # 【追加】カスタムプロパティから Center と Size を取得（なければデフォルト値）
+                center = mathutils.Vector(obj.get("collider_center", (0.0, 0.0, 0.0)))
+                size = mathutils.Vector(obj.get("collider_size", (2.0, 2.0, 2.0)))
+                
+                # 各オブジェクトのワールド行列を使用して座標を計算 (回転・スケール対応)
+                for offset in offsets:
+                    # 1. ローカル空間でのオフセットを計算 (Centerを加味し、Sizeでスケール)
+                    local_pos = center + mathutils.Vector((
+                        offset[0] * size[0], 
+                        offset[1] * size[1], 
+                        offset[2] * size[2]
+                    ))
+                    # 2. オブジェクトのmatrix_worldを掛けてワールド座標に変換
+                    world_pos = obj.matrix_world @ local_pos
+                    vertices["pos"].append(world_pos)
 
-            # Boxを構成する12本の辺のインデックスを追加
-            indices.extend([
-                [start+0, start+1], [start+2, start+3], [start+0, start+2], [start+1, start+3],
-                [start+4, start+5], [start+6, start+7], [start+4, start+6], [start+5, start+7],
-                [start+0, start+4], [start+1, start+5], [start+2, start+6], [start+3, start+7]
-            ])
+                # Boxを構成する12本の辺のインデックスを追加
+                indices.extend([
+                    [start+0, start+1], [start+2, start+3], [start+0, start+2], [start+1, start+3],
+                    [start+4, start+5], [start+6, start+7], [start+4, start+6], [start+5, start+7],
+                    [start+0, start+4], [start+1, start+5], [start+2, start+6], [start+3, start+7]
+                ])
+
+        # 描画する対象がない場合はエラーを防ぐため処理を抜ける
+        if not vertices["pos"]:
+            return
 
         # シェーダーの準備と描画
         shader = gpu.shader.from_builtin("UNIFORM_COLOR")
         batch = gpu_extras.batch.batch_for_shader(shader, "LINES", vertices, indices=indices)
         
-        color = [0.5, 1.0, 1.0, 1.0] # 水色
+        # 【変更点】資料に合わせて緑色に変更
+        color = [0.0, 1.0, 0.0, 1.0] # 緑色
         shader.bind()
         shader.uniform_float("color", color)
         batch.draw(shader)
@@ -173,6 +182,23 @@ class MYADDON_OT_add_filename(bpy.types.Operator):
         context.object["file_name"] = ""
         return {'FINISHED'}
 
+# --- 【新規追加】オペレータ：コライダー追加 ---
+class MYADDON_OT_add_collider(bpy.types.Operator):
+    bl_idname = "myaddon.add_collider"
+    bl_label = "コライダー追加"
+    bl_description = "オブジェクトにカスタムプロパティとしてコライダーを追加します"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj:
+            # プロパティの初期値を設定
+            obj["collider"] = "BOX"
+            obj["collider_center"] = mathutils.Vector((0.0, 0.0, 0.0))
+            obj["collider_size"] = mathutils.Vector((2.0, 2.0, 2.0))
+        return {'FINISHED'}
+
+
 # --- 既存のパネルクラス ---
 class OBJECT_PT_file_name(bpy.types.Panel):
     bl_idname = "OBJECT_PT_file_name"
@@ -196,14 +222,39 @@ class OBJECT_PT_file_name(bpy.types.Panel):
         else:
             layout.operator(MYADDON_OT_add_filename.bl_idname)
 
+# --- パネルクラス：コライダーUI ---
+class OBJECT_PT_collider(bpy.types.Panel):
+    bl_label = "Collider"
+    bl_idname = "OBJECT_PT_collider"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "object"
+
+    def draw(self, context):
+        layout = self.layout
+        obj = context.active_object
+        if not obj:
+            return
+
+        # プロパティがある場合はType, Center, Sizeを表示
+        if "collider" in obj:
+            layout.prop(obj, '["collider"]', text="Type")
+            layout.prop(obj, '["collider_center"]', text="Center")
+            layout.prop(obj, '["collider_size"]', text="Size")
+        # ない場合は「コライダー追加」ボタンを表示
+        else:
+            layout.operator(MYADDON_OT_add_collider.bl_idname, text="コライダー追加")
+
 # --- 登録・解除処理 ---
 classes = (
     MYADDON_OT_stretch_vertex,
     MYADDON_OT_create_ico_sphere,
     MYADDON_OT_export_scene,
     MYADDON_OT_add_filename,
+    MYADDON_OT_add_collider,
     TOPBAR_MT_my_menu,
     OBJECT_PT_file_name,
+    OBJECT_PT_collider,
 )
 
 def register():
