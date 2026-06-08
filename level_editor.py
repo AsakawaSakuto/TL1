@@ -152,6 +152,21 @@ class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelp
         self.write_and_print(file, indent + "Trans(%f,%f,%f)" % (trans.x, trans.y, trans.z))
         self.write_and_print(file, indent + "Rot(%f,%f,%f)" % (rot.x, rot.y, rot.z))
         self.write_and_print(file, indent + "Scale(%f,%f,%f)" % (scale.x, scale.y, scale.z))
+
+        # --- 【追加】ファイル名出力 ---
+        if "file_name" in object:
+            self.write_and_print(file, indent + "FileName(%s)" % object["file_name"])
+
+        # --- 【追加】コライダー情報の出力 ---
+        if "collider" in object:
+            self.write_and_print(file, indent + "Collider(%s)" % object["collider"])
+            
+            center = object.get("collider_center", (0.0, 0.0, 0.0))
+            self.write_and_print(file, indent + "ColliderCenter(%f,%f,%f)" % (center[0], center[1], center[2]))
+            
+            size = object.get("collider_size", (2.0, 2.0, 2.0))
+            self.write_and_print(file, indent + "ColliderSize(%f,%f,%f)" % (size[0], size[1], size[2]))
+
         self.write_and_print(file, '')
 
         for child in object.children:
